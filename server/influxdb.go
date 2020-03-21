@@ -17,13 +17,85 @@ const (
 
 // Influx is a influx publisher
 type Influx struct {
+	log    *api.Logger
+	client influxdb.Client
+	writer *writer
+}
+
+// writer batches points for writing
+type writer struct {
 	sync.Mutex
-	log         *api.Logger
-	client      influxdb.Client
-	points      []*influxdb.Point
-	pointsConf  influxdb.BatchPointsConfig
-	interval    time.Duration
-	measurement string
+	exit       chan struct{}
+	done       chan struct{}
+	log        *api.Logger
+	client     influxdb.Client
+	points     []*influxdb.Point
+	pointsConf influxdb.BatchPointsConfig
+	interval   time.Duration
+}
+
+// write asynchronously writes the collected points
+func (m *writer) add(p *influxdb.Point) {
+	m.Lock()
+	m.points = append(m.points, p)
+	m.Unlock()
+}
+
+// write asynchronously writes the collected points
+func (m *writer) write() {
+	m.Lock()
+
+	// get current batch
+	if len(m.points) == 0 {
+		m.Unlock()
+		return
+	}
+
+	// create new batch
+	batch, err := influxdb.NewBatchPoints(m.pointsConf)
+	if err != nil {
+		m.log.ERROR.Print(err)
+		m.Unlock()
+		return
+	}
+
+	// replace current batch
+	points := m.points
+	m.points = nil
+	m.Unlock()
+
+	// write batch
+	batch.AddPoints(points)
+	m.log.TRACE.Printf("writing %d point(s)", len(points))
+
+	if err := m.client.Write(batch); err != nil {
+		m.log.ERROR.Print(err)
+
+		// put points back at beginning of next batch
+		m.Lock()
+		m.points = append(points, m.points...)
+		m.Unlock()
+	}
+}
+
+func (m *writer) stop() <-chan struct{} {
+	m.exit <- struct{}{}
+	return m.done
+}
+
+func (m *writer) run() {
+	ticker := time.NewTicker(m.interval)
+	for {
+		select {
+		case <-ticker.C:
+			m.write()
+		case <-m.exit:
+			ticker.Stop()
+			m.write()
+			close(m.done)
+			return
+		}
+	}
 }
 
 // NewInfluxClient creates new publisher for influx
@@ -60,92 +132,39 @@ func NewInfluxClient(
 		}
 	}(client)
 
-	return &Influx{
-		log:      log,
-		client:   client,
-		interval: interval,
+	writer := &writer{
+		log:    log,
+		client: client,
 		pointsConf: influxdb.BatchPointsConfig{
 			Database:  database,
 			Precision: precision,
 		},
-	}
-}
-
-// writeBatchPoints asynchronously writes the collected points
-func (m *Influx) writeBatchPoints() {
-	m.Lock()
-
-	// get current batch
-	if len(m.points) == 0 {
-		m.Unlock()
-		return
+		interval: interval,
+		exit:     make(chan struct{}),
+		done:     make(chan struct{}),
 	}
 
-	// create new batch
-	batch, err := influxdb.NewBatchPoints(m.pointsConf)
-	if err != nil {
-		m.log.ERROR.Print(err)
-		m.Unlock()
-		return
+	return &Influx{
+		log:    log,
+		client: client,
+		writer: writer,
 	}
-
-	// replace current batch
-	points := m.points
-	m.points = nil
-	m.Unlock()
-
-	// write batch
-	batch.AddPoints(points)
-	m.log.TRACE.Printf("writing %d point(s)", len(points))
-
-	if err := m.client.Write(batch); err != nil {
-		m.log.ERROR.Print(err)
-
-		// put points back at beginning of next batch
-		m.Lock()
-		m.points = append(points, m.points...)
-		m.Unlock()
-	}
-}
-
-// asyncWriter periodically calls writeBatchPoints
-func (m *Influx) asyncWriter(exit <-chan struct{}) <-chan struct{} {
-	done := make(chan struct{}) // signal writer stopped
-
-	// async batch writer
-	go func() {
-		ticker := time.NewTicker(m.interval)
-		for {
-			select {
-			case <-ticker.C:
-				m.writeBatchPoints()
-			case <-exit:
-				ticker.Stop()
-				m.writeBatchPoints()
-				close(done)
-				return
-			}
-		}
-	}()
-
-	return done
 }
 
 // Run Influx publisher
 func (m *Influx) Run(in <-chan core.Param) {
-	// run async writer
-	exit := make(chan struct{}) // exit signals to stop writer
-	done := m.asyncWriter(exit) // done signals writer stopped
+	go m.writer.run() // asynchronously write batches
 
 	// add points to batch for async writing
 	for param := range in {
 		if _, ok := param.Val.(float64); !ok {
 			continue
 		}
-
 		p, err := influxdb.NewPoint(
 			param.Key,
-			map[string]string{},
+			map[string]string{
+				"loadpoint": param.LoadPoint,
+			},
 			map[string]interface{}{
 				"value": param.Val,
 			},
@@ -156,14 +175,11 @@ func (m *Influx) Run(in <-chan core.Param) {
 			continue
 		}
 
-		m.Lock()
-		m.points = append(m.points, p)
-		m.Unlock()
+		m.writer.add(p)
 	}
 
-	// close write loop
-	exit <- struct{}{}
-	<-done
+	// wait for write loop closed and done
+	<-m.writer.stop()
 
 	m.client.Close()
 }
