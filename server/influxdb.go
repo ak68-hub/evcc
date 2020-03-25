@@ -143,9 +143,7 @@ func (m *Influx) Run(in <-chan core.Param) {
 
 		p, err := influxdb.NewPoint(
 			param.Key,
-			map[string]string{
-				"loadpoint": param.LoadPoint,
-			},
+			param.Tags,
 			map[string]interface{}{
 				"value": param.Val,
 			},

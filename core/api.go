@@ -9,9 +9,9 @@ import (
 
 // Param is the broadcast channel data type
 type Param struct {
-	LoadPoint string
-	Key       string
-	Val       interface{}
+	Key  string
+	Val  interface{}
+	Tags map[string]string
 }
 
 // Configuration is the loadpoint feature structure

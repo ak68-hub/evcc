@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/andig/evcc/core"
@@ -23,6 +24,15 @@ type Deduplicator struct {
 	cache    map[string]cacheItem
 }
 
+// cacheKey determines unique key for cached value lookup
+func cacheKey(p core.Param) string {
+	key := p.Key
+	for k, v := range p.Tags {
+		key += fmt.Sprintf(".%s=%s", k, v)
+	}
+	return key
+}
+
 // NewDeduplicator creates Deduplicator
 func NewDeduplicator(interval time.Duration, filter ...string) Piper {
 	l := &Deduplicator{
@@ -40,8 +50,7 @@ func NewDeduplicator(interval time.Duration, filter ...string) Piper {
 
 func (l *Deduplicator) pipe(in <-chan core.Param, out chan<- core.Param) {
 	for p := range in {
-		// use loadpoint + param.Key as lookup key to value cache
-		key := p.LoadPoint + "." + p.Key
+		key := cacheKey(p)
 		item, cached := l.cache[key]
 		_, filtered := l.filter[p.Key]
 
@@ -79,8 +88,7 @@ func NewLimiter(interval time.Duration) Piper {
 
 func (l *Limiter) pipe(in <-chan core.Param, out chan<- core.Param) {
 	for p := range in {
-		// use loadpoint + param.Key as lookup key to value cache
-		key := p.LoadPoint + "." + p.Key
+		key := cacheKey(p)
 		item, cached := l.cache[key]
 
 		// forward if not cached or expired
@@ -93,6 +101,62 @@ func (l *Limiter) pipe(in <-chan core.Param, out chan<- core.Param) {
 
 // Pipe creates a new filtered output channel for given input channel
 func (l *Limiter) Pipe(in <-chan core.Param) <-chan core.Param {
+	out := make(chan core.Param)
+	go l.pipe(in, out)
+	return out
+}
+
+// Splitter allows filtering of channel data by given criteria
+type Splitter struct {
+	key   string
+	value float64
+	tags  []string
+}
+
+// NewSplitter creates Splitter
+func NewSplitter(key string, value float64, tags ...string) Piper {
+	l := &Splitter{
+		key:   key,
+		value: value,
+		tags:  tags,
+	}
+
+	return l
+}
+
+func (l *Splitter) pipe(in <-chan core.Param, out chan<- core.Param) {
+	for p := range in {
+		if p.Key != l.key {
+			out <- p
+			continue
+		}
+
+		pplus := p
+		pminus := p
+
+		// clone map
+		pminus.Tags = make(map[string]string)
+		for k, v := range p.Tags {
+			pminus.Tags[k] = v
+		}
+
+		tag := l.tags[0]
+		pplus.Tags[tag] = l.tags[1]  // use first tag value
+		pminus.Tags[tag] = l.tags[2] // use second tag value
+
+		if p.Val.(float64) >= 0 {
+			pminus.Val = 0
+		} else {
+			pplus.Val = 0
+		}
+
+		out <- pplus
+		out <- pminus
+	}
+}
+
+// Pipe creates a new filtered output channel for given input channel
+func (l *Splitter) Pipe(in <-chan core.Param) <-chan core.Param {
 	out := make(chan core.Param)
 	go l.pipe(in, out)
 	return out

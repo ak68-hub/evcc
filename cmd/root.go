@@ -211,6 +211,10 @@ func run(cmd *cobra.Command, args []string) {
 		dedupe := server.NewDeduplicator(30*time.Minute, "socCharge")
 		teeChan = dedupe.Pipe(teeChan)
 
+		// split gridPower
+		splitter := server.NewSplitter("gridPower", 0, "direction", "bezug", "lief")
+		teeChan = splitter.Pipe(teeChan)
+
 		// reduce number of values written to influx
 		limiter := server.NewLimiter(1 * time.Minute)
 		teeChan = limiter.Pipe(teeChan)

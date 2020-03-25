@@ -105,9 +105,9 @@ func (lp *LoadPoint) notify(event string, attributes map[string]interface{}) {
 // publish sends values to UI and databases
 func (lp *LoadPoint) publish(key string, val interface{}) {
 	lp.uiChan <- Param{
-		LoadPoint: lp.Name,
-		Key:       key,
-		Val:       val,
+		Key:  key,
+		Val:  val,
+		Tags: map[string]string{"loadpoint": lp.Name},
 	}
 }
 
