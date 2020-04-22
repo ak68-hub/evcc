@@ -138,7 +138,7 @@ func (m *Influx) Run(in <-chan core.Param) {
 	// add points to batch for async writing
 	for param := range in {
 		// allow nil value to be written as series gaps
-		if _, ok := param.Val.(float64); param.Val != nil && !ok {
+		if _, ok := param.Val.(string); param.Val != nil && ok {
 			continue
 		}
 

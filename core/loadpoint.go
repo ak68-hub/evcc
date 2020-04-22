@@ -378,6 +378,7 @@ func (lp *LoadPoint) setTargetCurrent(targetCurrentIn int64) error {
 	}
 
 	lp.bus.Publish(evChargeCurrent, targetCurrent)
+	lp.publish("maxCurrent", targetCurrent)
 
 	return nil
 }
