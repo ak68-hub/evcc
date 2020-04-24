@@ -18,6 +18,7 @@ type config struct {
 	Interval   time.Duration
 	Mqtt       mqttConfig
 	Influx     influxConfig
+	Influx2    influx2Config
 	Menu       []server.MenuConfig
 	Messaging  messagingConfig
 	Meters     []qualifiedConfig
@@ -53,6 +54,13 @@ type influxConfig struct {
 	User     string
 	Password string
 	Interval time.Duration
+}
+
+type influx2Config struct {
+	URL    string
+	Token  string
+	Org    string
+	Bucket string
 }
 
 // ConfigProvider provides configuration items

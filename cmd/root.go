@@ -177,29 +177,8 @@ func run(cmd *cobra.Command, args []string) {
 	valueChan := make(chan core.Param)
 	triggerChan := make(chan struct{})
 
-	// setup influx
-	if viper.Get("influx") != nil {
-		influx := server.NewInfluxClient(
-			conf.Influx.URL,
-			conf.Influx.Database,
-			conf.Influx.Interval,
-			conf.Influx.User,
-			conf.Influx.Password,
-		)
-
-		var teeChan <-chan core.Param
-		valueChan, teeChan = tee(valueChan)
-
-		// eliminate duplicate values
-		dedupe := server.NewDeduplicator(30*time.Minute, "socCharge")
-		teeChan = dedupe.Pipe(teeChan)
-
-		// reduce number of values written to influx
-		limiter := server.NewLimiter(5 * time.Second)
-		teeChan = limiter.Pipe(teeChan)
-
-		go influx.Run(teeChan)
-	}
+	// setup database
+	configureDatabase(conf, &valueChan)
 
 	// create webserver
 	socketHub := server.NewSocketHub()
