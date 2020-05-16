@@ -94,6 +94,7 @@ type LoadPoint struct {
 	pvPower      float64          // PV power
 	batteryPower float64          // Battery charge power
 	chargePower  float64          // Charging power
+	activePhases int64            // Detected phases
 
 	pvTimer time.Time
 }
@@ -109,6 +110,9 @@ type configProvider interface {
 func NewLoadPointFromConfig(log *util.Logger, cp configProvider, other map[string]interface{}) *LoadPoint {
 	lp := NewLoadPoint()
 	util.DecodeOther(log, other, &lp)
+
+	// set defaults
+	lp.activePhases = lp.Phases
 
 	if lp.ChargerRef != "" {
 		lp.charger = cp.Charger(lp.ChargerRef)
@@ -507,10 +511,33 @@ func (lp *LoadPoint) syncSettings() {
 	}
 }
 
+func (lp *LoadPoint) detectPhases() {
+	if phaseMeter, ok := lp.chargeMeter.(api.MeterCurrent); ok {
+		i1, i2, i3, err := phaseMeter.Currents()
+		if err != nil {
+			log.WARN.Printf("%s charge meter error: %v", lp.Name, err)
+		}
+
+		var phases int64
+		for _, i := range []float64{i1, i2, i3} {
+			if i >= 1 {
+				phases++
+			}
+		}
+
+		if phases > 0 {
+			lp.activePhases = min(phases, lp.Phases)
+			log.TRACE.Printf("%s detected phases: %d", lp.Name, lp.activePhases)
+		}
+	}
+}
+
 // update is the main control function. It reevaluates meters and charger state
 func (lp *LoadPoint) update() {
 	// read and publish meters first
 	meterErr := lp.updateMeters()
+
+	lp.detectPhases()
 
 	// update ChargeRater here to make sure initial meter update is caught
 	lp.bus.Publish(evChargeCurrent, lp.targetCurrent)
