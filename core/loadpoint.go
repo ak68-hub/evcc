@@ -28,18 +28,13 @@ const (
 	evChargePower   = "power"   // update chargeRater
 )
 
-// powerToCurrent is a helper function to convert power to per-phase current
-func powerToCurrent(power, voltage float64, phases int64) int64 {
-	return int64(power / (float64(phases) * voltage))
-}
-
 // Config contains the public loadpoint configuration
 type Config struct {
 	Mode api.ChargeMode // Charge mode, guarded by mutex
 
 	// options
 	Phases        int64   // Phases- required for converting power and current.
-	Voltage       float64 // Operating voltage. 230V for Germany.
+	Voltage       int64   // Operating voltage. 230V for Germany.
 	ResidualPower float64 // PV meter only: household usage. Grid meter: household safety margin
 
 	ChargerRef string `mapstructure:"charger"` // Charger reference
@@ -155,6 +150,7 @@ func NewLoadPoint() *LoadPoint {
 			Phases:  1,
 			Voltage: 230, // V
 		},
+		activePhases:   1,
 		status:         api.StatusNone,
 		ChargerHandler: NewChargerHandler("main", clock, bus),
 	}
@@ -215,7 +211,7 @@ func consumedPower(pv, battery, grid float64) float64 {
 // where the charge meter can always be treated as present.  It assumes that the charge meter cannot consume
 // more than total household consumption. If physical charge meter is present this handler is not used.
 func (lp *LoadPoint) evChargeCurrentHandler(current int64) {
-	power := float64(current*lp.Phases) * lp.Voltage
+	power := float64(current * lp.activePhases * lp.Voltage)
 
 	if !lp.enabled || lp.status != api.StatusC {
 		// if disabled we cannot be charging
@@ -358,6 +354,11 @@ func (lp *LoadPoint) updateChargeStatus() error {
 	return nil
 }
 
+// powerToCurrent converts power to per-phase current. Current is truncated to integer.
+func (lp *LoadPoint) powerToCurrent(power float64) int64 {
+	return int64(power / float64(lp.activePhases*lp.Voltage))
+}
+
 func (lp *LoadPoint) maxCurrent(mode api.ChargeMode) int64 {
 	// grid meter will always be available, if as wrapped pv meter
 	targetPower := lp.chargePower - lp.gridPower - lp.batteryPower - lp.ResidualPower
@@ -368,7 +369,7 @@ func (lp *LoadPoint) maxCurrent(mode api.ChargeMode) int64 {
 	}
 
 	// get max charge current
-	targetCurrent := clamp(powerToCurrent(targetPower, lp.Voltage, lp.Phases), 0, lp.MaxCurrent)
+	targetCurrent := clamp(lp.powerToCurrent(targetPower), 0, lp.MaxCurrent)
 
 	if mode == api.ModeMinPV && targetCurrent < lp.MinCurrent {
 		return lp.MinCurrent
@@ -528,6 +529,8 @@ func (lp *LoadPoint) detectPhases() {
 		if phases > 0 {
 			lp.activePhases = min(phases, lp.Phases)
 			log.TRACE.Printf("%s detected phases: %d", lp.Name, lp.activePhases)
+
+			lp.publish("activePhases", lp.activePhases)
 		}
 	}
 }

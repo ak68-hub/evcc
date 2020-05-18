@@ -178,7 +178,7 @@ func TestInitialUpdate(t *testing.T) {
 		wb.EXPECT().Status().Return(tc.status, nil)
 
 		// values are relevant for PV case
-		minPower := float64(lpMinCurrent) * lp.Voltage
+		minPower := float64(lpMinCurrent * lp.Voltage)
 		pm.EXPECT().CurrentPower().Return(minPower, nil)
 		gm.EXPECT().CurrentPower().Return(float64(0), nil)
 		if cm != nil {
@@ -250,7 +250,7 @@ func TestImmediateOnOff(t *testing.T) {
 		wb.EXPECT().Status().Return(tc.status, nil)
 
 		// values are relevant for PV case
-		minPower := float64(lpMinCurrent) * lp.Voltage * float64(lp.Phases)
+		minPower := float64(lpMinCurrent * lp.Voltage * lp.activePhases)
 		pm.EXPECT().CurrentPower().Return(minPower, nil)
 		gm.EXPECT().CurrentPower().Return(0.0, nil)
 		if cm != nil {
@@ -478,7 +478,8 @@ func TestPVHysteresis(t *testing.T) {
 					Delay:     dt,
 				},
 			},
-			gridPower: 0,
+			gridPower:    0,
+			activePhases: 10, // mirror Phases
 		}
 
 		start := clck.Now()
