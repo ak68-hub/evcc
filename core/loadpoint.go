@@ -512,6 +512,7 @@ func (lp *LoadPoint) syncSettings() {
 	}
 }
 
+// detectPhases uses MeterCurrent interface to count phases with current >=1A
 func (lp *LoadPoint) detectPhases() {
 	if phaseMeter, ok := lp.chargeMeter.(api.MeterCurrent); ok {
 		i1, i2, i3, err := phaseMeter.Currents()
@@ -540,6 +541,7 @@ func (lp *LoadPoint) update() {
 	// read and publish meters first
 	meterErr := lp.updateMeters()
 
+	// detect active phases
 	lp.detectPhases()
 
 	// update ChargeRater here to make sure initial meter update is caught
