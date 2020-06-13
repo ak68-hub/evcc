@@ -106,8 +106,6 @@ func (c *GoE) apiStatus() (status goeStatusResponse, err error) {
 		return c.localResponse("status", "")
 	}
 
-	status = c.status // cached value
-
 	if time.Since(c.updated) > c.cache {
 		status, err = c.cloudResponse("api_status", "")
 		if err == nil {
@@ -116,7 +114,7 @@ func (c *GoE) apiStatus() (status goeStatusResponse, err error) {
 		}
 	}
 
-	return status, err
+	return c.status, err
 }
 
 func (c *GoE) apiUpdate(payload string) (goeStatusResponse, error) {
