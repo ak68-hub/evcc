@@ -177,7 +177,7 @@ func (c *GoE) Enable(enable bool) error {
 
 	status, err := c.apiUpdate(fmt.Sprintf("alw=%d", b))
 	if err == nil && status.Alw != b {
-		return fmt.Errorf("alw update failed: %d", status.Amp)
+		return fmt.Errorf("alw update failed: %d", status.Alw)
 	}
 
 	return err
@@ -193,7 +193,7 @@ func (c *GoE) MaxCurrent(current int64) error {
 	return err
 }
 
-// CurrentPower implements the Meter interface.
+// CurrentPower implements the Meter interface
 func (c *GoE) CurrentPower() (float64, error) {
 	status, err := c.apiStatus()
 	var power float64
