@@ -117,19 +117,15 @@ func (c *GoE) apiStatus() (status goeStatusResponse, err error) {
 	return c.status, err
 }
 
-func (c *GoE) apiUpdate(payload string) (goeStatusResponse, error) {
+func (c *GoE) apiUpdate(payload string) error {
 	if c.token == "" {
-		return c.localResponse("mqtt", payload)
+		_, err := c.localResponse("mqtt", payload)
+		return err
 	}
 
-	status, err := c.cloudResponse("api", payload)
-	if err == nil {
-		// reset timer and re-read status
-		c.updated = time.Time{}
-		status, err = c.apiStatus()
-	}
-
-	return status, err
+	_, err := c.cloudResponse("api", payload)
+	c.updated = time.Time{}
+	return err
 }
 
 // Status implements the Charger.Status interface
@@ -175,22 +171,12 @@ func (c *GoE) Enable(enable bool) error {
 		b = 1
 	}
 
-	status, err := c.apiUpdate(fmt.Sprintf("alw=%d", b))
-	if err == nil && status.Alw != b {
-		return fmt.Errorf("alw update failed: %d", status.Alw)
-	}
-
-	return err
+	return c.apiUpdate(fmt.Sprintf("alw=%d", b))
 }
 
 // MaxCurrent implements the Charger.MaxCurrent interface
 func (c *GoE) MaxCurrent(current int64) error {
-	status, err := c.apiUpdate(fmt.Sprintf("amp=%d", current))
-	if err == nil && int64(status.Amp) != current {
-		return fmt.Errorf("amp update failed: %d", status.Amp)
-	}
-
-	return err
+	return c.apiUpdate(fmt.Sprintf("amp=%d", current))
 }
 
 // CurrentPower implements the Meter interface
