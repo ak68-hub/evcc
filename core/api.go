@@ -15,7 +15,7 @@ func (lp *LoadPoint) hasChargeMeter() bool {
 func (lp *LoadPoint) chargeDuration() time.Duration {
 	d, err := lp.chargeTimer.ChargingTime()
 	if err != nil {
-		log.ERROR.Printf("%s charge timer error: %v", lp.Name, err)
+		lp.log.ERROR.Printf("charge timer error: %v", err)
 	}
 	return d
 }
@@ -24,7 +24,7 @@ func (lp *LoadPoint) chargeDuration() time.Duration {
 func (lp *LoadPoint) chargedEnergy() float64 {
 	f, err := lp.chargeRater.ChargedEnergy()
 	if err != nil {
-		log.ERROR.Printf("%s charge rater error: %v", lp.Name, err)
+		lp.log.ERROR.Printf("charge rater error: %v", err)
 	}
 	return f
 }
@@ -52,12 +52,12 @@ func (lp *LoadPoint) publishSoC() {
 	if lp.connected() {
 		f, err := lp.vehicle.ChargeState()
 		if err == nil {
-			log.DEBUG.Printf("%s vehicle soc: %.1f%%", lp.Name, f)
+			lp.log.DEBUG.Printf("vehicle soc: %.1f%%", f)
 			lp.publish("socCharge", f)
 			lp.publish("chargeEstimate", lp.remainingChargeDuration(f))
 			return
 		}
-		log.ERROR.Printf("%s vehicle error: %v", lp.Name, err)
+		lp.log.ERROR.Printf("vehicle error: %v", err)
 	}
 
 	lp.publish("socCharge", -1)

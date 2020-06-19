@@ -21,6 +21,7 @@ type Site struct {
 	sync.Mutex                    // guard status
 	triggerChan chan struct{}     // API updates
 	uiChan      chan<- util.Param // client push messages
+	log         *util.Logger
 
 	// configuration
 	Title         string         `mapstructure:"title"`         // UI title
@@ -65,10 +66,10 @@ func NewSiteFromConfig(
 	}
 
 	// if site.Meters.PVMeterRef == "" && site.Meters.GridMeterRef == "" {
-	// 	log.FATAL.Fatal("config: missing either pv or grid meter")
+	// 	site.log.FATAL.Fatal("config: missing either pv or grid meter")
 	// }
 	if site.Meters.GridMeterRef == "" {
-		log.FATAL.Fatal("config: missing grid meter")
+		site.log.FATAL.Fatal("config: missing grid meter")
 	}
 	if site.Meters.GridMeterRef != "" {
 		site.gridMeter = cp.Meter(site.Meters.GridMeterRef)
@@ -80,13 +81,13 @@ func NewSiteFromConfig(
 		site.batteryMeter = cp.Meter(site.Meters.BatteryMeterRef)
 	}
 
-	// site.loadPoints = loadPoints
+	// convert loadpoints to interfaces
 	for _, lp := range loadPoints {
 		site.loadPoints = append(site.loadPoints, lp)
 	}
 
 	if Voltage != 0 && Voltage != site.VoltageRef {
-		log.FATAL.Fatal("config: only single voltage allowed")
+		site.log.FATAL.Fatal("config: only single voltage allowed")
 	}
 
 	Voltage = site.VoltageRef
@@ -97,6 +98,7 @@ func NewSiteFromConfig(
 // NewSite creates a Site with sane defaults
 func NewSite() *Site {
 	lp := &Site{
+		log:         util.NewLogger("core"),
 		triggerChan: make(chan struct{}, 1),
 		Mode:        api.ModeOff,
 		VoltageRef:  230, // V
@@ -162,28 +164,28 @@ func (lp *Site) Configuration() SiteConfiguration {
 
 // DumpConfig site configuration
 func (lp *Site) DumpConfig() {
-	log.INFO.Println("site config:")
-	log.INFO.Printf("  mode: %s", lp.GetMode())
-	log.INFO.Printf("  grid %s", presence[lp.gridMeter != nil])
-	log.INFO.Printf("  pv %s", presence[lp.pvMeter != nil])
-	log.INFO.Printf("  battery %s", presence[lp.batteryMeter != nil])
+	lp.log.INFO.Println("site config:")
+	lp.log.INFO.Printf("  mode: %s", lp.GetMode())
+	lp.log.INFO.Printf("  grid %s", presence[lp.gridMeter != nil])
+	lp.log.INFO.Printf("  pv %s", presence[lp.pvMeter != nil])
+	lp.log.INFO.Printf("  battery %s", presence[lp.batteryMeter != nil])
 
 	for i, lptr := range lp.loadPoints {
 		lp := lptr.(*LoadPoint)
-		log.INFO.Printf("loadpoint %d config:", i)
+		lp.log.INFO.Printf("loadpoint %d config:", i)
 
-		log.INFO.Printf("  name %s", lp.Name)
-		log.INFO.Printf("  vehicle %s", presence[lp.vehicle != nil])
-		log.INFO.Printf("  charge %s", presence[lp.hasChargeMeter()])
+		lp.log.INFO.Printf("  name %s", lp.Name)
+		lp.log.INFO.Printf("  vehicle %s", presence[lp.vehicle != nil])
+		lp.log.INFO.Printf("  charge %s", presence[lp.hasChargeMeter()])
 
 		_, power := lp.charger.(api.Meter)
 		_, energy := lp.charger.(api.ChargeRater)
 		_, timer := lp.charger.(api.ChargeTimer)
 
-		log.INFO.Println("  charger config:")
-		log.INFO.Printf("    power %s", presence[power])
-		log.INFO.Printf("    energy %s", presence[energy])
-		log.INFO.Printf("    timer %s", presence[timer])
+		lp.log.INFO.Println("  charger config:")
+		lp.log.INFO.Printf("    power %s", presence[power])
+		lp.log.INFO.Printf("    energy %s", presence[energy])
+		lp.log.INFO.Printf("    timer %s", presence[timer])
 	}
 }
 
@@ -192,7 +194,7 @@ func (lp *Site) Update() {
 	select {
 	case lp.triggerChan <- struct{}{}: // non-blocking send
 	default:
-		log.WARN.Printf("update blocked")
+		lp.log.WARN.Printf("update blocked")
 	}
 }
 
@@ -208,7 +210,7 @@ func (lp *Site) SetMode(mode api.ChargeMode) {
 	lp.Lock()
 	defer lp.Unlock()
 
-	log.INFO.Printf("set charge mode: %s", string(mode))
+	lp.log.INFO.Printf("set charge mode: %s", string(mode))
 
 	// apply immediately
 	if lp.Mode != mode {
@@ -239,7 +241,7 @@ func (lp *Site) updateMeter(name string, meter api.Meter, power *float64) error 
 
 	*power = value // update value if no error
 
-	log.DEBUG.Printf("%s power: %.1fW", name, *power)
+	lp.log.DEBUG.Printf("%s power: %.1fW", name, *power)
 	lp.publish(name+"Power", *power)
 
 	return nil
@@ -255,7 +257,7 @@ func (lp *Site) updateMeters() (err error) {
 
 			if e != nil {
 				err = errors.Wrapf(e, "updating %s meter", s)
-				log.ERROR.Println(err)
+				lp.log.ERROR.Println(err)
 			}
 		}
 	}
@@ -281,7 +283,7 @@ func (lp *Site) sitePower() (float64, error) {
 	}
 
 	sitePower := sitePower(lp.gridPower, lp.batteryPower, lp.ResidualPower)
-	log.DEBUG.Printf("site power: %.0fW", sitePower)
+	lp.log.DEBUG.Printf("site power: %.0fW", sitePower)
 
 	return sitePower, nil
 }
@@ -295,10 +297,10 @@ func (lp *Site) update() error {
 		return err
 	}
 
-	for idx, lp := range lp.loadPoints {
-		usedPower := lp.Update(mode, sitePower)
+	for idx, loadPoint := range lp.loadPoints {
+		usedPower := loadPoint.Update(mode, sitePower)
 		remainingPower := sitePower + usedPower
-		log.DEBUG.Printf("lp-%d. remaining power: %.0fW = %.0fW - %.0fW", idx+1, remainingPower, sitePower, usedPower)
+		lp.log.DEBUG.Printf("lp-%d remaining power: %.0fW = %.0fW - %.0fW", idx+1, remainingPower, sitePower, usedPower)
 		sitePower = remainingPower
 	}
 

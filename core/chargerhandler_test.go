@@ -6,6 +6,7 @@ import (
 
 	"github.com/andig/evcc/api"
 	"github.com/andig/evcc/mock"
+	"github.com/andig/evcc/util"
 	evbus "github.com/asaskevich/EventBus"
 	"github.com/benbjohnson/clock"
 	"github.com/golang/mock/gomock"
@@ -19,7 +20,7 @@ const (
 )
 
 func newChargerHandler(clock clock.Clock, mc api.Charger) ChargerHandler {
-	r := NewChargerHandler("", clock, evbus.New())
+	r := NewChargerHandler(util.NewLogger("foo"), clock, evbus.New())
 
 	r.charger = mc
 	r.Sensitivity = sensitivity
@@ -29,7 +30,7 @@ func newChargerHandler(clock clock.Clock, mc api.Charger) ChargerHandler {
 }
 
 func TestNewChargerHandler(t *testing.T) {
-	r := NewChargerHandler("", nil, nil)
+	r := NewChargerHandler(util.NewLogger("foo"), nil, nil)
 
 	if r.MinCurrent != minA {
 		t.Errorf("expected %v, got %v", minA, r.MinCurrent)
