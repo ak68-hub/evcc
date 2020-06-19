@@ -141,16 +141,13 @@ func run(cmd *cobra.Command, args []string) {
 	uri := viper.GetString("uri")
 	log.INFO.Println("listening at", uri)
 
-	// setup messaging
-	pushChan := configureMessengers(conf.Messaging)
-
 	// setup mqtt
 	if viper.Get("mqtt") != nil {
 		provider.MQTT = provider.NewMqttClient(conf.Mqtt.Broker, conf.Mqtt.User, conf.Mqtt.Password, clientID(), 1)
 	}
 
 	// setup loadpoints
-	site := loadConfig(conf, pushChan)
+	site := loadConfig(conf)
 
 	// start broadcasting values
 	tee := &Tee{}
@@ -193,8 +190,14 @@ func run(cmd *cobra.Command, args []string) {
 	// capture log messages for UI
 	util.CaptureLogs(valueChan)
 
+	// setup messaging
+	pushChan := configureMessengers(conf.Messaging)
+
+	// set channels
+	site.Prepare(valueChan, pushChan)
+
 	site.DumpConfig()
-	go site.Run(valueChan, pushChan, conf.Interval)
+	go site.Run(conf.Interval)
 
 	log.FATAL.Println(httpd.ListenAndServe())
 }

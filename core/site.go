@@ -1,7 +1,6 @@
 package core
 
 import (
-	"math"
 	"sync"
 	"time"
 
@@ -12,15 +11,22 @@ import (
 	"github.com/pkg/errors"
 )
 
+//go:generate mockgen -package mock -destination ../mock/mock_loadpoint.go github.com/andig/evcc/core LoadPointer
+
+type LoadPointer interface {
+	Update(api.ChargeMode, float64) float64
+}
+
 type Site struct {
 	sync.Mutex                    // guard status
 	triggerChan chan struct{}     // API updates
 	uiChan      chan<- util.Param // client push messages
 
-	Title         string         // UI title
-	Voltage       float64        // Operating voltage. 230V for Germany.
-	ResidualPower float64        // PV meter only: household usage. Grid meter: household safety margin
-	Mode          api.ChargeMode // Charge mode, guarded by mutex
+	// configuration
+	Title         string         `mapstructure:"title"`         // UI title
+	VoltageRef    float64        `mapstructure:"voltage"`       // Operating voltage. 230V for Germany.
+	ResidualPower float64        `mapstructure:"residualPower"` // PV meter only: household usage. Grid meter: household safety margin
+	Mode          api.ChargeMode `mapstructure:"mode"`          // Charge mode, guarded by mutex
 	Meters        MetersConfig   // Meter references
 
 	// meters
@@ -28,7 +34,7 @@ type Site struct {
 	pvMeter      api.Meter // PV generation meter
 	batteryMeter api.Meter // Battery charging meter
 
-	loadPoints []*LoadPoint // Loadpoints
+	loadPoints []LoadPointer // Loadpoints
 
 	// cached state
 	gridPower    float64 // Grid power
@@ -58,8 +64,11 @@ func NewSiteFromConfig(
 		site.Mode = api.ModeOff
 	}
 
-	if site.Meters.PVMeterRef == "" && site.Meters.GridMeterRef == "" {
-		log.FATAL.Fatal("config: missing either pv or grid meter")
+	// if site.Meters.PVMeterRef == "" && site.Meters.GridMeterRef == "" {
+	// 	log.FATAL.Fatal("config: missing either pv or grid meter")
+	// }
+	if site.Meters.GridMeterRef == "" {
+		log.FATAL.Fatal("config: missing grid meter")
 	}
 	if site.Meters.GridMeterRef != "" {
 		site.gridMeter = cp.Meter(site.Meters.GridMeterRef)
@@ -71,14 +80,16 @@ func NewSiteFromConfig(
 		site.batteryMeter = cp.Meter(site.Meters.BatteryMeterRef)
 	}
 
-	if site.pvMeter == nil && site.gridMeter == nil {
-		log.FATAL.Fatal("missing either pv or grid meter")
+	// site.loadPoints = loadPoints
+	for _, lp := range loadPoints {
+		site.loadPoints = append(site.loadPoints, lp)
 	}
 
-	site.loadPoints = loadPoints
-	for _, lp := range loadPoints {
-		lp.Site = site
+	if Voltage != 0 && Voltage != site.VoltageRef {
+		log.FATAL.Fatal("config: only single voltage allowed")
 	}
+
+	Voltage = site.VoltageRef
 
 	return site
 }
@@ -88,13 +99,13 @@ func NewSite() *Site {
 	lp := &Site{
 		triggerChan: make(chan struct{}, 1),
 		Mode:        api.ModeOff,
-		Voltage:     230, // V
+		VoltageRef:  230, // V
 	}
 
 	return lp
 }
 
-// SiteConfiguration is the loadpoint feature structure
+// SiteConfiguration contains the global site configuration
 type SiteConfiguration struct {
 	Mode         string                   `json:"mode"`
 	GridMeter    bool                     `json:"gridMeter"`
@@ -125,8 +136,10 @@ func (lp *Site) Configuration() SiteConfiguration {
 		BatteryMeter: lp.batteryMeter != nil,
 	}
 
-	for _, lp := range lp.loadPoints {
-		l := LoadpointConfiguration{
+	for _, lptr := range lp.loadPoints {
+		lp := lptr.(*LoadPoint)
+
+		lpc := LoadpointConfiguration{
 			Name:        lp.Name,
 			Title:       lp.Title,
 			Phases:      lp.Phases,
@@ -136,12 +149,12 @@ func (lp *Site) Configuration() SiteConfiguration {
 		}
 
 		if lp.vehicle != nil {
-			l.SoC = true
-			l.SoCCapacity = lp.vehicle.Capacity()
-			l.SoCTitle = lp.vehicle.Title()
+			lpc.SoC = true
+			lpc.SoCCapacity = lp.vehicle.Capacity()
+			lpc.SoCTitle = lp.vehicle.Title()
 		}
 
-		c.LoadPoints = append(c.LoadPoints, l)
+		c.LoadPoints = append(c.LoadPoints, lpc)
 	}
 
 	return c
@@ -155,7 +168,8 @@ func (lp *Site) DumpConfig() {
 	log.INFO.Printf("  pv %s", presence[lp.pvMeter != nil])
 	log.INFO.Printf("  battery %s", presence[lp.batteryMeter != nil])
 
-	for i, lp := range lp.loadPoints {
+	for i, lptr := range lp.loadPoints {
+		lp := lptr.(*LoadPoint)
 		log.INFO.Printf("loadpoint %d config:", i)
 
 		log.INFO.Printf("  name %s", lp.Name)
@@ -198,18 +212,18 @@ func (lp *Site) SetMode(mode api.ChargeMode) {
 
 	// apply immediately
 	if lp.Mode != mode {
-		for _, lp := range lp.loadPoints {
-			lp.resetGuard()
-		}
-
 		lp.Mode = mode
+		lp.Update()
 	}
-
-	lp.Update()
 }
 
 // publish sends values to UI and databases
 func (lp *Site) publish(key string, val interface{}) {
+	// test helper
+	if lp.uiChan == nil {
+		return
+	}
+
 	lp.uiChan <- util.Param{
 		Key: key,
 		Val: val,
@@ -254,14 +268,10 @@ func (lp *Site) updateMeters() (err error) {
 	return err
 }
 
-func consumedPower(pv, battery, grid float64) float64 {
-	return math.Abs(pv) + battery + grid
-}
-
 // consumedPower estimates how much power the charger might have consumed given it was the only load
-func (lp *Site) consumedPower() float64 {
-	return consumedPower(lp.pvPower, lp.batteryPower, lp.gridPower)
-}
+// func (lp *Site) consumedPower() float64 {
+// 	return consumedPower(lp.pvPower, lp.batteryPower, lp.gridPower)
+// }
 
 // sitePower returns the net power exported by the site minus a residual margin.
 // negative values mean grid: export, battery: charging
@@ -270,7 +280,9 @@ func (lp *Site) sitePower() (float64, error) {
 		return 0, err
 	}
 
-	sitePower := lp.gridPower + lp.batteryPower + lp.ResidualPower
+	sitePower := sitePower(lp.gridPower, lp.batteryPower, lp.ResidualPower)
+	log.DEBUG.Printf("site power: %.0fW", sitePower)
+
 	return sitePower, nil
 }
 
@@ -278,32 +290,33 @@ func (lp *Site) update() error {
 	mode := lp.GetMode()
 	lp.publish("mode", string(mode))
 
-	availablePower, err := lp.sitePower()
+	sitePower, err := lp.sitePower()
 	if err != nil {
 		return err
 	}
 
-	log.DEBUG.Printf("site power: %.0fW", availablePower)
-
-	for _, lp := range lp.loadPoints {
-		usedPower := lp.update(mode, availablePower)
-		remainingPower := availablePower + usedPower
-		log.DEBUG.Printf("%s remaining power: %.0fW = %.0fW - %.0fW", lp.Name, remainingPower, availablePower, usedPower)
-		availablePower = remainingPower
+	for idx, lp := range lp.loadPoints {
+		usedPower := lp.Update(mode, sitePower)
+		remainingPower := sitePower + usedPower
+		log.DEBUG.Printf("lp-%d. remaining power: %.0fW = %.0fW - %.0fW", idx+1, remainingPower, sitePower, usedPower)
+		sitePower = remainingPower
 	}
 
 	return nil
 }
 
-// Run is the loadpoint main control loop. It reacts to trigger events by
-// updating measurements and executing control logic.
-func (lp *Site) Run(uiChan chan<- util.Param, pushChan chan<- push.Event, interval time.Duration) {
+func (lp *Site) Prepare(uiChan chan<- util.Param, pushChan chan<- push.Event) {
 	lp.uiChan = uiChan
-	for _, _lp := range lp.loadPoints {
-		_lp.Prepare(uiChan, pushChan)
-		_lp.Voltage = lp.Voltage
-	}
 
+	for _, loadPoint := range lp.loadPoints {
+		loadPoint.(*LoadPoint).Prepare(uiChan, pushChan)
+	}
+}
+
+// Run is the main control loop. It reacts to trigger events by
+// updating measurements and executing control logic.
+func (lp *Site) Run(interval time.Duration) {
+	// update ticker
 	ticker := time.NewTicker(interval)
 	lp.triggerChan <- struct{}{} // start immediately
 
@@ -314,7 +327,7 @@ func (lp *Site) Run(uiChan chan<- util.Param, pushChan chan<- push.Event, interv
 				lp.triggerChan <- struct{}{} // restart immediately
 			}
 		case <-lp.triggerChan:
-			lp.update()
+			_ = lp.update()
 			ticker.Stop()
 			ticker = time.NewTicker(interval)
 		}

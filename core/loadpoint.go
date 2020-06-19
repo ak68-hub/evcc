@@ -1,7 +1,6 @@
 package core
 
 import (
-	"math"
 	"time"
 
 	"github.com/andig/evcc/api"
@@ -15,11 +14,6 @@ import (
 	"github.com/benbjohnson/clock"
 )
 
-var (
-	status   = map[bool]string{false: "disable", true: "enable"}
-	presence = map[bool]string{false: "—", true: "✓"}
-)
-
 const (
 	evStartCharge   = "start"   // update chargeTimer
 	evStopCharge    = "stop"    // update chargeTimer
@@ -27,43 +21,33 @@ const (
 	evChargePower   = "power"   // update chargeRater
 )
 
-// powerToCurrent is a helper function to convert power to per-phase current
-func powerToCurrent(power, voltage float64, phases int64) int64 {
-	return int64(power / (float64(phases) * voltage))
-}
-
 // ThresholdConfig defines enable/disable hysteresis parameters
 type ThresholdConfig struct {
 	Delay     time.Duration
 	Threshold float64
 }
 
-// ChargeMeterConfig contains the loadpoint's meter configuration
-type ChargeMeterConfig struct {
-	ChargeMeterRef string `mapstructure:"charge"` // Charger usage meter reference
-}
+//XXgo:generate mockgen -package mock -destination ../mock/mock_chargerhandler.go github.com/andig/evcc/core ChargerHandler
 
 // LoadPoint is responsible for controlling charge depending on
 // SoC needs and power availability.
 type LoadPoint struct {
 	ID int
 
-	// sync.Mutex                         // guard status
 	clock    clock.Clock       // mockable time
 	bus      evbus.Bus         // event bus
 	pushChan chan<- push.Event // notifications
 	uiChan   chan<- util.Param // client push messages
 
 	// exposed public configuration
-	Title           string            // UI title
-	Voltage         float64           // Operating voltage- identical for all loadpoints
-	Phases          int64             // Phases- required for converting power and current
-	ChargerRef      string            `mapstructure:"charger"` // Charger reference
-	VehicleRef      string            `mapstructure:"vehicle"` // Vehicle reference
-	Meter           ChargeMeterConfig `mapstructure:"meters"`  // Meter references
+	Title           string `mapstructure:"title"`   // UI title
+	Phases          int64  `mapstructure:"phases"`  // Phases- required for converting power and current
+	ChargerRef      string `mapstructure:"charger"` // Charger reference
+	VehicleRef      string `mapstructure:"vehicle"` // Vehicle reference
+	ChargeMeterRef  string `mapstructure:"charge"`  // Charge meter reference
 	Enable, Disable ThresholdConfig
 
-	Site *Site
+	// Site *Site
 
 	ChargerHandler `mapstructure:",squash"` // handle charger state and current
 
@@ -92,8 +76,8 @@ func NewLoadPointFromConfig(log *util.Logger, cp configProvider, other map[strin
 	} else {
 		log.FATAL.Fatal("config: missing charger")
 	}
-	if lp.Meter.ChargeMeterRef != "" {
-		lp.chargeMeter = cp.Meter(lp.Meter.ChargeMeterRef)
+	if lp.ChargeMeterRef != "" {
+		lp.chargeMeter = cp.Meter(lp.ChargeMeterRef)
 	}
 	if lp.VehicleRef != "" {
 		lp.vehicle = cp.Vehicle(lp.VehicleRef)
@@ -108,9 +92,8 @@ func NewLoadPoint() *LoadPoint {
 	bus := evbus.New()
 
 	lp := &LoadPoint{
-		clock: clock, // mockable time
-		bus:   bus,   // event bus
-		// triggerChan: make(chan struct{}, 1),
+		clock:          clock, // mockable time
+		bus:            bus,   // event bus
 		Phases:         1,
 		status:         api.StatusNone,
 		ChargerHandler: NewChargerHandler("main", clock, bus),
@@ -163,21 +146,23 @@ func (lp *LoadPoint) evChargeStopHandler() {
 }
 
 // evChargeCurrentHandler updates the dummy charge meter's charge power. This simplifies the main flow
-// where the charge meter can always be treated as present.  It assumes that the charge meter cannot consume
+// where the charge meter can always be treated as present. It assumes that the charge meter cannot consume
 // more than total household consumption. If physical charge meter is present this handler is not used.
 func (lp *LoadPoint) evChargeCurrentHandler(current int64) {
-	power := float64(current*lp.Phases) * lp.Voltage
+	power := float64(current*lp.Phases) * Voltage
 
 	if !lp.enabled || lp.status != api.StatusC {
 		// if disabled we cannot be charging
 		power = 0
-	} else if power > 0 && lp.Site.pvMeter != nil {
-		// limit charge power to generation plus grid consumption/ minus grid delivery
-		// as the charger cannot have consumed more than that
-		// consumedPower := consumedPower(lp.pvPower, lp.batteryPower, lp.gridPower)
-		consumedPower := lp.Site.consumedPower()
-		power = math.Min(power, consumedPower)
 	}
+	// TODO
+	// else if power > 0 && lp.Site.pvMeter != nil {
+	// 	// limit charge power to generation plus grid consumption/ minus grid delivery
+	// 	// as the charger cannot have consumed more than that
+	// 	// consumedPower := consumedPower(lp.pvPower, lp.batteryPower, lp.gridPower)
+	// 	consumedPower := lp.Site.consumedPower()
+	// 	power = math.Min(power, consumedPower)
+	// }
 
 	// handler only called if charge meter was replaced by dummy
 	lp.chargeMeter.(*wrapper.ChargeMeter).SetPower(power)
@@ -315,7 +300,7 @@ func (lp *LoadPoint) maxCurrent(mode api.ChargeMode) int64 {
 	log.DEBUG.Printf("%s target power: %.0fW = %.0fW charge - %.0fW available", lp.Name, targetPower, lp.chargePower, lp.sitePower)
 
 	// get max charge current
-	targetCurrent := clamp(powerToCurrent(targetPower, lp.Voltage, lp.Phases), 0, lp.MaxCurrent)
+	targetCurrent := clamp(powerToCurrent(targetPower, Voltage, lp.Phases), 0, lp.MaxCurrent)
 
 	if mode == api.ModeMinPV && targetCurrent < lp.MinCurrent {
 		return lp.MinCurrent
@@ -433,11 +418,6 @@ func (lp *LoadPoint) updateMeters() (err error) {
 	return err
 }
 
-// resetGuard sets guardUpdated to an expired value
-func (lp *LoadPoint) resetGuard() {
-	lp.guardUpdated = lp.clock.Now().Add(-2 * lp.GuardDuration)
-}
-
 // syncSettings synchronizes charger settings to expected state
 func (lp *LoadPoint) syncSettings() {
 	enabled, err := lp.charger.Enabled()
@@ -452,7 +432,7 @@ func (lp *LoadPoint) syncSettings() {
 }
 
 // update is the main control function. It reevaluates meters and charger state
-func (lp *LoadPoint) update(mode api.ChargeMode, sitePower float64) float64 {
+func (lp *LoadPoint) Update(mode api.ChargeMode, sitePower float64) float64 {
 	// read and publish meters first
 	meterErr := lp.updateMeters()
 
